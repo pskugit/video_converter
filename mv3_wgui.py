@@ -1,274 +1,185 @@
 import os
 import sys
 import time
-import traceback
 from pathlib import Path
 from os.path import isfile, join
 
-#external packages
+# External packages
 import cv2
 import tqdm
 import imageio
-import numpy as np
 from PyQt5 import QtWidgets, QtCore, QtGui, uic
 
+
 class Worker(QtCore.QObject):
-    '''
-    Worker thread that handles the major program load. Allowing the gui to still be responsive.
-    '''
+    """
+    Worker thread that handles the major program load, allowing the GUI to remain responsive.
+    """
+    progress = QtCore.pyqtSignal(int)  # Change to int type
+    finished = QtCore.pyqtSignal()
+
     def __init__(self, filenames, config):
         super(Worker, self).__init__()
         self.filenames = filenames
         self.config = config
 
-    #QT signals - specify the method that the worker will be executing
-    progress = QtCore.pyqtSignal(float)
-    call_video = QtCore.pyqtSignal()
-    call_images = QtCore.pyqtSignal()
-    finished = QtCore.pyqtSignal()
-
     @QtCore.pyqtSlot()
     def images(self):
-        '''
-        function to convert the video to an image folder
-        '''
-        cap = cv2.VideoCapture(self.filenames)
-        length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(5)
-        print("video fps:", fps)
-        skipframes = 0  #int(fps)
-        print(skipframes)
-        print("number of frames:", length)
-        width = len(str(length))
-        dir = "\\".join(Path(self.filenames).parts[:-1])+"\\"+(str(Path(self.filenames).parts[-1]).split(".")[0]+"_images")
-        print("creates folder:", dir)
+        """
+        Function to convert the video to an image folder.
+        """
         try:
-            os.mkdir(dir)
-        except FileExistsError:
-            print("folder exists!")
-            return
-        else:
+            cap = cv2.VideoCapture(self.filenames)
+            length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if length == 0 or fps == 0:
+                raise ValueError("Invalid video file.")
+            print("Video FPS:", fps)
+            print("Number of frames:", length)
+
+            # Create directory for images
+            dir_path = os.path.join(
+                os.path.dirname(self.filenames),
+                f"{Path(self.filenames).stem}_images"
+            )
+            print("Creating folder:", dir_path)
+
+            if not os.path.exists(dir_path):
+                os.mkdir(dir_path)
+            else:
+                print("Folder already exists. Continuing frame extraction...")
+
             ret = True
             i = 1
+            width = len(str(length))
+
+            # Extract frames and save them as images
             while ret:
-                filename = str(i).rjust(width,"0")+'.png'
-                for _ in range(skipframes+1):
-                    ret, frame = cap.read()
-                #print(ret)
+                ret, frame = cap.read()
                 if ret:
-                    cv2.imwrite(dir+"\\"+filename, frame)
-                    print("saves", dir+"\\"+filename)
-                    self.progress.emit(100 * ((i*(skipframes+1)) / length))
+                    filename = os.path.join(dir_path, f"{str(i).zfill(width)}.png")
+                    cv2.imwrite(filename, frame)
+                    print("Saved", filename)
+                    self.progress.emit(int(100 * (i / length)))  # Ensure emitting int value
                     i += 1
-            self.finished.emit()
-        finally:
+
             cap.release()
+        except Exception as e:
+            print(f"Error during frame extraction: {e}")
+        finally:
+            self.finished.emit()
 
     @QtCore.pyqtSlot()
     def video(self):
-        '''
-        function to convert the image folder to video
-        '''
-        #### PARAMETERS
-        container = ".mp4" #".avi" #
-        codec = "HEVC" #"DIVX" #
-        if self.config["max_length"] > 0:
-            max_length = min(self.config["max_length"], len(self.filenames))
-        else:
-            max_length = len(self.filenames)
-        size = self.config["size"]
-        repeatframe = self.config["repeatframe"]
-        fps = self.config["fps"]
-        self.filenames = self.filenames[:max_length]
-        name = "video_" + time.strftime("%y_%m_%d_%H-%M-%S", time.localtime()) + container
-        output_path = "videos/" + name
-        if size[0] == 0 and size[1] == 0:
-            tframe = cv2.imread(self.filenames[0])
-            (oldh, oldw, depth) = tframe.shape
-            size = (oldw, oldh)
-            print("Using imput frame shape of:", size)
-            print(tframe.shape)
-        print("\nVideo format")
-        print("resolution:",size)
-        print("container:",container)
-        print("codec:",codec)
-        print("output to",output_path)
-        output = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*codec), fps, size)
-        length = len(self.filenames)
-        for idx, file in tqdm.tqdm(enumerate(self.filenames)):
-            frame = cv2.imread(file)
-            if frame is None:
-                print("not an image file:",file)
-                continue
-            #resizing
-            (oldh, oldw, depth) = frame.shape
-            woffset = (oldw - size[0]) // 2
-            hoffset = (oldh - size[1]) // 2
-            frame = frame[hoffset:hoffset + size[1], woffset:woffset + size[0]]
-            for i in range(repeatframe):
-                output.write(frame)
-            self.progress.emit(100 * ((idx + 1) / length))
-        output.release()
-        print("Saved Video in", output_path)
-        print("Number of frames:", len(self.filenames) * repeatframe)
-        self.finished.emit()
+        """
+        Function to convert an image folder into a video.
+        """
+        try:
+            container = ".mp4"
+            codec = "HEVC"
+            max_length = self.config["max_length"] or len(self.filenames)
+            size = self.config["size"]
+            repeatframe = self.config["repeatframe"]
+            fps = self.config["fps"]
+
+            output_path = Path("videos") / f"video_{time.strftime('%y_%m_%d_%H-%M-%S')}{container}"
+            output_path.parent.mkdir(exist_ok=True)
+
+            if size == (0, 0):
+                size = cv2.imread(self.filenames[0]).shape[1::-1]
+
+            print("Video Format")
+            print(f"Resolution: {size}, Container: {container}, Codec: {codec}, Output: {output_path}")
+
+            output = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*codec), fps, size)
+            for idx, file in tqdm.tqdm(enumerate(self.filenames[:max_length])):
+                frame = cv2.imread(file)
+                if frame is None:
+                    print("Skipped invalid file:", file)
+                    continue
+                frame = cv2.resize(frame, size)
+                for _ in range(repeatframe):
+                    output.write(frame)
+                self.progress.emit(int(100 * ((idx + 1) / max_length)))  # Emit progress as int
+
+            output.release()
+            print(f"Saved video in {output_path}")
+        except Exception as e:
+            print(f"Error during video creation: {e}")
+        finally:
+            self.finished.emit()
+
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
-        QtWidgets.QMainWindow.__init__(self)
-        self.setMinimumSize(QtCore.QSize(440, 180))
-        uic.loadUi("mv3_gui.ui",self)
-        self.setWindowTitle("Videomaker")
-
-        self.mv_button.setEnabled(False)
+        super().__init__()
+        uic.loadUi("mv3_gui.ui", self)
+        self.setWindowTitle("Video Maker")
         self.config = {
             "max_length": 0,
             "size": (0, 0),
             "repeatframe": 1,
             "fps": 30,
         }
-        self.mode = "f2v"
-        self.progress.setValue(0)
+        self.filenames = []
+        self.setup_ui()
+
+    def setup_ui(self):
         self.set_defaults()
-        self.update_config()
-        self.change_mode(0)
         self.setup_connections()
+        self.change_mode(0)
+        self.progress.setValue(0)
 
     def setup_connections(self):
-        '''
-        initializes all QT signal and slot connections
-        '''
         self.data_button.clicked.connect(self.filedialog_folder)
         self.mv_button.clicked.connect(self.action)
-        self.max_length_le.textChanged.connect(self.update_config)
-        self.size1_le.textChanged.connect(self.update_config)
-        self.size2_le.textChanged.connect(self.update_config)
-        self.repeatframe_le.textChanged.connect(self.update_config)
-        self.fps_le.textChanged.connect(self.update_config)
         self.mode_slider.valueChanged.connect(self.change_mode)
 
-    @QtCore.pyqtSlot(float)
-    def on_progress(self, value):
-        self.progress.setValue(value)
-
-    @QtCore.pyqtSlot()
-    def on_finish(self):
-        self.data_button.setEnabled(True)
-        self.mode_slider.setEnabled(True)
-        self.my_thread.quit()
-
     def filedialog_folder(self):
-        """
-        Opens an os native file dialog and returns a list of all selected files.
-        Sets the list of selected files as content to the line edit.
-        """
-        self.progress.setValue(0)
         dlg = QtWidgets.QFileDialog()
         if self.mode == "f2v":
-            folder = dlg.getExistingDirectory(self, 'Select video folder', os.getcwd())
-            self.data_label.setText(folder)
-            try:
-                print("Loading data...")
-                files = os.listdir(folder)
-            except FileNotFoundError:
-                print("...no data.")
-                return
-            files.sort()
-            #max_length = min(self.config["max_length"], len(files))
-            #files = files[:max_length]
-            self.filenames = [join(folder, f) for f in files]
-            print(self.filenames)
-            print("length", len( self.filenames))
-            print("=================\nfinished loading files from folder")
-            self.mv_button.setEnabled(True)
-        if self.mode == "v2f":
-            video_file, _ = dlg.getOpenFileNames(self, 'Select video file', os.getcwd())
-            if not video_file:
-                return
-            self.data_label.setText(video_file[0])
-            if not any([type in video_file[0] for type in [".avi", ".mp4"]]):
-                print("...no data.")
-                return
-            else:
-                self.filenames = video_file[0]
-                print(self.filenames)
-                print("=================\nfinished loading video")
-                self.mv_button.setEnabled(True)
+            folder = dlg.getExistingDirectory(self, "Select Image Folder", os.getcwd())
+            if folder:
+                self.filenames = [join(folder, f) for f in sorted(os.listdir(folder)) if isfile(join(folder, f))]
+        else:
+            video_file, _ = dlg.getOpenFileName(self, "Select Video File", os.getcwd(), "Video Files (*.mp4 *.avi)")
+            if video_file:
+                self.filenames = video_file
+
+        self.mv_button.setEnabled(bool(self.filenames))
 
     def action(self):
-        '''
-        function that is executed on click of the major start button
-        calls either make_images() or save_movie() depending on the active mode.
-        '''
-
         self.mv_button.setEnabled(False)
         self.data_button.setEnabled(False)
         self.mode_slider.setEnabled(False)
-        self.my_thread = QtCore.QThread()
-        self.my_thread.start()
+
+        self.worker = Worker(self.filenames, self.config)
+        self.worker_thread = QtCore.QThread()
+        self.worker.moveToThread(self.worker_thread)
+        self.worker.progress.connect(self.progress.setValue)
+        self.worker.finished.connect(self.worker_thread.quit)
+        self.worker.finished.connect(self.on_finish)
+
         if self.mode == "f2v":
-            self.save_movie()
-        if self.mode == "v2f":
-            self.make_images()
+            self.worker_thread.started.connect(self.worker.video)
+        else:
+            self.worker_thread.started.connect(self.worker.images)
 
-    def make_images(self):
-        '''
-        sends the command to the worker thread to build an image folder
-        '''
-        self.my_worker = Worker(self.filenames, None)
-        self.my_worker.moveToThread(self.my_thread)
-        self.my_worker.call_images.connect(self.my_worker.images)
-        self.my_worker.progress.connect(self.on_progress)
-        self.my_worker.finished.connect(self.on_finish)
-        self.my_worker.call_images.emit()
+        self.worker_thread.start()
 
-    def save_movie(self):
-        '''
-        sends the command to the worker thread to build and save a video file
-        '''
-        self.my_worker = Worker(self.filenames, self.config)
-        self.my_worker.moveToThread(self.my_thread)
-        self.my_worker.call_video.connect(self.my_worker.video)
-        self.my_worker.progress.connect(self.on_progress)
-        self.my_worker.finished.connect(self.on_finish)
-        self.my_worker.call_video.emit()
-
-    @QtCore.pyqtSlot(int)
-    def change_mode(self, value):
-        '''
-        switches mode and view betwwen f2v (folder2video) and v2f (video2folder)
-        '''
-        self.progress.setValue(0)
-        self.filenames = []
-        self.mv_button.setEnabled(False)
-        if value == 0:
-            self.mode = "f2v"
-            self.data_label.setText("select a folder that contains the images")
-            self.data_button.setText("select folder")
-            self.mv_button.setText("make video")
-            self.config_widget.show()
-        if value == 1:
-            self.mode = "v2f"
-            self.data_label.setText("select the video file")
-            self.data_button.setText("select video")
-            self.mv_button.setText("make image folder")
-            self.config_widget.hide()
+    def on_finish(self):
+        self.mv_button.setEnabled(True)
+        self.data_button.setEnabled(True)
+        self.mode_slider.setEnabled(True)
 
     def set_defaults(self):
-        '''
-        sets the configuration to the hard coded default values
-        '''
         self.max_length_le.setText(str(self.config["max_length"]))
         self.size1_le.setText(str(self.config["size"][0]))
         self.size2_le.setText(str(self.config["size"][1]))
         self.repeatframe_le.setText(str(self.config["repeatframe"]))
         self.fps_le.setText(str(self.config["fps"]))
 
-
     def update_config(self):
-        '''
-        reads the test lines to update the internal configuration
-        '''
         try:
             self.config = {
                 "max_length": int(self.max_length_le.text()),
@@ -277,13 +188,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 "fps": float(self.fps_le.text()),
             }
         except ValueError:
-            print("WARNING: invalid value in configurations")
-        else:
-            print("new cofig \n", self.config)
+            print("Invalid configuration.")
+
+    def change_mode(self, value):
+        self.mode = "f2v" if value == 0 else "v2f"
+        self.data_label.setText("Select Folder" if self.mode == "f2v" else "Select Video")
+        self.mv_button.setText("Make Video" if self.mode == "f2v" else "Make Images")
+
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
-    app.setWindowIcon(QtGui.QIcon('icons/favicon.svg'))
     mainWin = MainWindow()
     mainWin.show()
     sys.exit(app.exec_())
